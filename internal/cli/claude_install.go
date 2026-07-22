@@ -92,8 +92,6 @@ func normalizeBridgeArgs(args []string) ([]string, error) {
 		args = args[1:]
 	case "inspect":
 		return nil, errors.New(`"inspect" is not supported for configure-claude; configure the default bridge mode instead`)
-	case "client":
-		return nil, errors.New(`the "client" subcommand has been removed; use the default bridge mode`)
 	}
 
 	if len(args) == 0 {

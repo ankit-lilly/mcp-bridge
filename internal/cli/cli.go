@@ -249,7 +249,7 @@ func (v *bridgeFlagValues) buildConfig(positional []string) (*Config, error) {
 func rejectRemovedFlags(args []string) error {
 	for _, arg := range args {
 		if arg == "--transport" || strings.HasPrefix(arg, "--transport=") {
-			return errors.New("--transport has been removed; mcp-bridge now only supports streamable HTTP")
+			return errors.New("--transport is not supported; mcp-bridge uses streamable HTTP")
 		}
 	}
 	return nil

@@ -57,8 +57,6 @@ func splitMode(args []string) (mode, []string, error) {
 		return inspectMode, args[1:], nil
 	case "configure-claude":
 		return configureClaudeMode, args[1:], nil
-	case "client":
-		return bridgeMode, nil, fmt.Errorf(`the "client" subcommand has been removed; use "inspect" or the default bridge mode`)
 	case "bridge":
 		return bridgeMode, args[1:], nil
 	default:

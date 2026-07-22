@@ -63,7 +63,7 @@ make build
 ### Bridge mode (default)
 
 The bridge runs as a local stdio MCP server and relays traffic to a remote server.
-The explicit `bridge` subcommand is also accepted as a compatibility alias:
+You can also run bridge mode explicitly with the `bridge` subcommand:
 
 ```bash
 mcp-bridge [flags] <server-url> [callback-port]
@@ -73,8 +73,8 @@ mcp-bridge bridge [flags] <server-url> [callback-port]
 If `--callback-port` is omitted, the bridge derives a stable local callback port from the server configuration.
 
 Loopback HTTP URLs such as `http://localhost/...` are allowed without `--allow-http`.
-Legacy SSE transport endpoints are not supported.
-The old `client` subcommand and `--transport` flag are removed.
+SSE transport endpoints are not supported.
+`--transport` is not supported.
 
 ### Inspect mode
 

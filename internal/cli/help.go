@@ -24,7 +24,7 @@ func WriteRootHelp(w io.Writer) {
 	fmt.Fprintln(w, "Commands:")
 	fmt.Fprintln(w, "  inspect            Diagnose a remote server")
 	fmt.Fprintln(w, "  configure-claude   Add or update a Claude Desktop mcpServers entry")
-	fmt.Fprintln(w, "  bridge             Compatibility alias for the default bridge mode")
+	fmt.Fprintln(w, "  bridge             Run the stdio bridge explicitly")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Run 'mcp-bridge <command> --help' for command-specific flags.")
 }

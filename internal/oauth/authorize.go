@@ -24,8 +24,6 @@ type callbackData struct {
 	err  error
 }
 
-// Authorize runs the full OAuth flow: metadata discovery, client registration, browser auth, token exchange.
-// An optional ChallengeInfo from the failing HTTP response drives discovery.
 func (m *Manager) Authorize(ctx context.Context, challenges ...*ChallengeInfo) (*Token, *ClientRegistration, error) {
 	var challenge *ChallengeInfo
 	if len(challenges) > 0 {

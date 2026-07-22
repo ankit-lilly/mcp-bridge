@@ -54,13 +54,6 @@ func TestSplitMode_BridgeAlias(t *testing.T) {
 	}
 }
 
-func TestSplitMode_ClientRemoved(t *testing.T) {
-	_, _, err := splitMode([]string{"client", "https://example.com/mcp"})
-	if err == nil {
-		t.Fatal("expected removed client subcommand to error")
-	}
-}
-
 func TestIsVersionArg(t *testing.T) {
 	if !isVersionArg("--version") || !isVersionArg("-v") {
 		t.Fatal("expected version flags to be recognized")

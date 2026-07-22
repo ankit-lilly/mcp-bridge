@@ -77,14 +77,14 @@ func TestParse_MissingURL(t *testing.T) {
 	}
 }
 
-func TestParse_RemovedTransport(t *testing.T) {
+func TestParse_UnsupportedTransportFlag(t *testing.T) {
 	for _, args := range [][]string{
 		{"--transport", "http-first", "https://example.com/mcp"},
 		{"--transport=http-first", "https://example.com/mcp"},
 	} {
 		_, err := Parse(args)
 		if err == nil {
-			t.Fatalf("expected error for removed transport flag: %v", args)
+			t.Fatalf("expected error for unsupported transport flag: %v", args)
 		}
 	}
 }
