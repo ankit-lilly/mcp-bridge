@@ -1,0 +1,51 @@
+version: 2
+project_name: mcp-bridge
+
+before:
+  hooks:
+    - go test ./...
+
+builds:
+  - id: mcp-bridge
+    main: ./cmd/bridge
+    binary: mcp-bridge
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    gcflags:
+      - all=-l
+    ldflags:
+      - -s -w
+        -X github.com/ankit-lilly/mcp-bridge/internal/version.Version={{ .Version }}
+        -X github.com/ankit-lilly/mcp-bridge/internal/version.Commit={{ .ShortCommit }}
+        -X github.com/ankit-lilly/mcp-bridge/internal/version.BuildDate={{ .Date }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: mcp-bridge-archive
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
