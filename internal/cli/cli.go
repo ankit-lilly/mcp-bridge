@@ -46,7 +46,15 @@ func (r *repeatedFlag) Set(s string) error {
 var bridgeFlagNames = newBridgeFlagNames()
 
 func Parse(args []string) (*Config, error) {
-	return parseBridgeCommand("mcp-bridge", args)
+	return ParseBridge(args)
+}
+
+func ParseBridge(args []string) (*Config, error) {
+	return parseBridgeCommand("mcp-bridge", bridgeUsageLine, args)
+}
+
+func ParseInspect(args []string) (*Config, error) {
+	return parseBridgeCommand("mcp-bridge inspect", inspectUsageLine, args)
 }
 
 // Validate checks the config for internal consistency.
@@ -132,12 +140,12 @@ type bridgeFlagValues struct {
 	staticClientInfo string
 }
 
-func parseBridgeCommand(name string, args []string) (*Config, error) {
+func parseBridgeCommand(name, usageLine string, args []string) (*Config, error) {
 	if err := rejectRemovedFlags(args); err != nil {
 		return nil, err
 	}
 
-	fs, values := newBridgeFlagSet(name)
+	fs, values := newBridgeFlagSet(name, usageLine)
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -152,15 +160,16 @@ func parseBridgeCommand(name string, args []string) (*Config, error) {
 	return cfg, nil
 }
 
-func newBridgeFlagSet(name string) (*flag.FlagSet, *bridgeFlagValues) {
+func newBridgeFlagSet(name, usageLine string) (*flag.FlagSet, *bridgeFlagValues) {
 	values := &bridgeFlagValues{}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	setFlagSetUsage(fs, usageLine)
 	registerBridgeFlags(fs, values)
 	return fs, values
 }
 
 func newBridgeFlagNames() map[string]struct{} {
-	fs, _ := newBridgeFlagSet("bridge-flags")
+	fs, _ := newBridgeFlagSet("bridge-flags", bridgeUsageLine)
 	names := make(map[string]struct{})
 	fs.VisitAll(func(f *flag.Flag) {
 		names[f.Name] = struct{}{}

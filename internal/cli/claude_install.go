@@ -34,7 +34,7 @@ func ParseConfigureClaude(args []string) (*ClaudeInstallConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := parseBridgeCommand("configure-claude", bridgeArgs); err != nil {
+	if _, err := parseBridgeCommand("configure-claude", bridgeUsageLine, bridgeArgs); err != nil {
 		return nil, err
 	}
 
@@ -65,6 +65,7 @@ type configureClaudeFlagValues struct {
 func newConfigureClaudeFlagSet() (*flag.FlagSet, *configureClaudeFlagValues) {
 	values := &configureClaudeFlagValues{}
 	fs := flag.NewFlagSet("configure-claude", flag.ContinueOnError)
+	setFlagSetUsage(fs, configureClaudeUsageLine, configureClaudePassthroughUsageLine)
 	fs.StringVar(&values.name, "name", "", "Claude Desktop server name")
 	fs.StringVar(&values.claudeConfigPath, "claude-config", "", "Claude Desktop config path")
 	fs.BoolVar(&values.dryRun, "dry-run", false, "Print the merged Claude config without writing")

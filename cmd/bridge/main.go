@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
 	"os"
 
@@ -19,7 +21,13 @@ const (
 )
 
 func main() {
-	runMode, args, err := splitMode(os.Args[1:])
+	rawArgs := os.Args[1:]
+	if len(rawArgs) > 0 && isHelpArg(rawArgs[0]) {
+		cli.WriteRootHelp(os.Stdout)
+		os.Exit(0)
+	}
+
+	runMode, args, err := splitMode(rawArgs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -31,6 +39,9 @@ func main() {
 	}
 
 	if err := run(runMode, context.Background(), args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}
@@ -59,6 +70,10 @@ func isVersionArg(arg string) bool {
 	return arg == "--version" || arg == "-v"
 }
 
+func isHelpArg(arg string) bool {
+	return arg == "--help" || arg == "-h"
+}
+
 func run(m mode, ctx context.Context, args []string) error {
 	ioStreams := app.DefaultIO()
 	switch m {
@@ -69,13 +84,13 @@ func run(m mode, ctx context.Context, args []string) error {
 		}
 		return app.RunConfigureClaude(ctx, cfg, ioStreams)
 	case inspectMode:
-		cfg, err := cli.Parse(args)
+		cfg, err := cli.ParseInspect(args)
 		if err != nil {
 			return err
 		}
 		return app.RunInspect(ctx, cfg, ioStreams)
 	default:
-		cfg, err := cli.Parse(args)
+		cfg, err := cli.ParseBridge(args)
 		if err != nil {
 			return err
 		}

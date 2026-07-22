@@ -69,3 +69,12 @@ func TestIsVersionArg(t *testing.T) {
 		t.Fatal("unexpected version match for inspect")
 	}
 }
+
+func TestIsHelpArg(t *testing.T) {
+	if !isHelpArg("--help") || !isHelpArg("-h") {
+		t.Fatal("expected help flags to be recognized")
+	}
+	if isHelpArg("inspect") {
+		t.Fatal("unexpected help match for inspect")
+	}
+}
