@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-// mockConn is a test ByteConn backed by channels.
 type mockConn struct {
 	readCh  chan []byte
 	written [][]byte

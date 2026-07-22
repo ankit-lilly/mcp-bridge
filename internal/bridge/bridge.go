@@ -1,4 +1,3 @@
-// Package bridge implements the stdio<->remote MCP relay.
 package bridge
 
 import (
@@ -126,7 +125,6 @@ type Relay struct {
 	clientID string
 }
 
-// RelayConfig holds relay configuration.
 type RelayConfig struct {
 	Logger   *slog.Logger
 	ClientID string
