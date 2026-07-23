@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"strings"
@@ -22,6 +23,7 @@ type HTTPConnector struct {
 	headers     map[string]string
 	tokenSource TokenSource
 	authorizer  Authorizer
+	logger      *slog.Logger
 }
 
 type HTTPConnectorConfig struct {
@@ -30,6 +32,7 @@ type HTTPConnectorConfig struct {
 	Headers     map[string]string
 	TokenSource TokenSource
 	Authorizer  Authorizer
+	Logger      *slog.Logger
 }
 
 func NewHTTPConnector(cfg HTTPConnectorConfig) *HTTPConnector {
@@ -37,12 +40,17 @@ func NewHTTPConnector(cfg HTTPConnectorConfig) *HTTPConnector {
 	if client == nil {
 		client = http.DefaultClient
 	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &HTTPConnector{
 		client:      client,
 		url:         cfg.URL,
 		headers:     cfg.Headers,
 		tokenSource: cfg.TokenSource,
 		authorizer:  cfg.Authorizer,
+		logger:      logger,
 	}
 }
 
@@ -51,6 +59,7 @@ func (c *HTTPConnector) Connect(_ context.Context) (bridge.ByteConn, error) {
 		connector: c,
 		inbound:   make(chan []byte, 64),
 		done:      make(chan struct{}),
+		logger:    c.logger,
 	}, nil
 }
 
@@ -59,11 +68,14 @@ type streamableConn struct {
 	inbound   chan []byte
 	done      chan struct{}
 	closeOnce sync.Once
+	logger    *slog.Logger
 
 	mu              sync.Mutex
 	sessionID       string
 	protocolVersion string // negotiated from initialize response
 	initialized     bool
+	initFrame       []byte // stored initialize request for session recovery
+	recovering      bool   // guards against infinite recovery loops
 
 	streamMu     sync.Mutex
 	streamCancel context.CancelFunc
@@ -87,6 +99,13 @@ func (c *streamableConn) Read(ctx context.Context) ([]byte, error) {
 }
 
 func (c *streamableConn) Write(ctx context.Context, frame []byte) error {
+	// Store the initialize frame for session recovery
+	if c.isInitializeRequest(frame) {
+		c.mu.Lock()
+		c.initFrame = bytes.Clone(frame)
+		c.mu.Unlock()
+	}
+
 	resp, err := c.doPost(ctx, frame)
 	if err != nil {
 		return err
@@ -105,7 +124,7 @@ func (c *streamableConn) Write(ctx context.Context, frame []byte) error {
 		c.mu.Unlock()
 	}
 
-	return c.dispatchResponse(resp, frame)
+	return c.dispatchResponse(ctx, resp, frame)
 }
 
 // handleAuthChallenge retries the request after re-authorization if the server
@@ -138,7 +157,7 @@ func (c *streamableConn) handleAuthChallenge(ctx context.Context, resp *http.Res
 }
 
 // dispatchResponse handles the response body based on status code and content type.
-func (c *streamableConn) dispatchResponse(resp *http.Response, frame []byte) error {
+func (c *streamableConn) dispatchResponse(ctx context.Context, resp *http.Response, frame []byte) error {
 	switch resp.StatusCode {
 	case http.StatusOK:
 		ct := resp.Header.Get("Content-Type")
@@ -164,7 +183,7 @@ func (c *streamableConn) dispatchResponse(resp *http.Response, frame []byte) err
 		hasSession := c.sessionID != ""
 		c.mu.Unlock()
 		if hasSession {
-			return fmt.Errorf("session terminated by server (404)")
+			return c.recover(ctx, frame)
 		}
 		return fmt.Errorf("streamable HTTP endpoint not found (404)")
 	case http.StatusMethodNotAllowed:
@@ -173,6 +192,72 @@ func (c *streamableConn) dispatchResponse(resp *http.Response, frame []byte) err
 		return fmt.Errorf("POST returned status %d", resp.StatusCode)
 	}
 
+	return nil
+}
+
+// recover attempts to transparently re-establish the session after a 404 and
+// retry the failed frame. It re-sends the stored initialize handshake, waits
+// for the new session to be established, then retries the original request.
+func (c *streamableConn) recover(ctx context.Context, failedFrame []byte) error {
+	c.mu.Lock()
+	initFrame := c.initFrame
+	alreadyRecovering := c.recovering
+	c.mu.Unlock()
+
+	if initFrame == nil || alreadyRecovering {
+		return fmt.Errorf("session terminated by server (404)")
+	}
+
+	c.mu.Lock()
+	c.recovering = true
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.recovering = false
+		c.mu.Unlock()
+	}()
+
+	c.logger.Info("session expired (404), attempting recovery...")
+
+	// 1. Tear down existing event stream
+	c.streamMu.Lock()
+	if c.streamCancel != nil {
+		c.streamCancel()
+	}
+	if c.streamResp != nil {
+		c.streamResp.Body.Close()
+	}
+	c.streamCancel = nil
+	c.streamResp = nil
+	c.streamMu.Unlock()
+
+	// 2. Clear session state
+	c.mu.Lock()
+	c.sessionID = ""
+	c.protocolVersion = ""
+	c.initialized = false
+	c.mu.Unlock()
+
+	// 3. Re-send initialize (captures new sessionID, starts new event stream)
+	if err := c.Write(ctx, initFrame); err != nil {
+		return fmt.Errorf("session recovery: re-initialize failed: %w", err)
+	}
+
+	// 4. Send notifications/initialized
+	notif := []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	if err := c.Write(ctx, notif); err != nil {
+		return fmt.Errorf("session recovery: initialized notification failed: %w", err)
+	}
+
+	c.mu.Lock()
+	newSID := c.sessionID
+	c.mu.Unlock()
+	c.logger.Info("session recovery successful", "new_session", newSID)
+
+	// 5. Retry the original failed frame
+	if err := c.Write(ctx, failedFrame); err != nil {
+		return fmt.Errorf("session recovery: retry failed: %w", err)
+	}
 	return nil
 }
 

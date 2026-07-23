@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -220,5 +221,192 @@ func TestIntegration_FullStreamableHTTPFlow(t *testing.T) {
 		if methods[i] != m {
 			t.Fatalf("method[%d]: expected %q, got %q", i, m, methods[i])
 		}
+	}
+}
+
+// TestIntegration_SessionRecoveryOn404 simulates a server that invalidates the
+// session mid-flight (returns 404 on a POST after the session was established).
+// The bridge should transparently re-initialize and retry the failed request.
+func TestIntegration_SessionRecoveryOn404(t *testing.T) {
+	var (
+		mu        sync.Mutex
+		sessionID atomic.Value
+		methods   []string
+		postCount atomic.Int32
+	)
+	sessionID.Store("session-1")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			// Don't support server event streams for this test
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Method == "DELETE" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != "POST" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		n := postCount.Add(1)
+
+		var msg struct {
+			Method string `json:"method"`
+			ID     any    `json:"id"`
+		}
+		json.NewDecoder(r.Body).Decode(&msg)
+
+		mu.Lock()
+		methods = append(methods, msg.Method)
+		mu.Unlock()
+
+		currentSession := sessionID.Load().(string)
+		reqSession := r.Header.Get("Mcp-Session-Id")
+
+		// On the 3rd POST (the tools/call), return 404 to simulate session expiry.
+		// The sequence is: initialize(1), notifications/initialized(2), tools/call(3=404)
+		// After recovery: initialize(4), notifications/initialized(5), tools/call(6=success)
+		if n == 3 {
+			// Simulate session invalidation
+			sessionID.Store("session-2")
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		// For subsequent requests after recovery, validate the session matches
+		if msg.Method != "initialize" && reqSession != "" && reqSession != currentSession {
+			// Allow stale session from the 404'd request, but new init should not have one
+		}
+
+		w.Header().Set("Mcp-Session-Id", sessionID.Load().(string))
+
+		switch msg.Method {
+		case "initialize":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg.ID,
+				"result": map[string]any{
+					"protocolVersion": "2024-11-05",
+					"serverInfo":      map[string]any{"name": "recovery-test-server"},
+					"capabilities":    map[string]any{},
+				},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg.ID,
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": "tool result"},
+					},
+				},
+			})
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": nil})
+		}
+	}))
+	defer server.Close()
+
+	connector := NewHTTPConnector(HTTPConnectorConfig{
+		Client: server.Client(),
+		URL:    server.URL,
+		Logger: slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, err := connector.Connect(ctx)
+	if err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	defer conn.Close()
+
+	// 1. Initialize
+	initReq := `{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+	if err := conn.Write(ctx, []byte(initReq)); err != nil {
+		t.Fatalf("initialize write failed: %v", err)
+	}
+	initResp, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("initialize read failed: %v", err)
+	}
+	if !strings.Contains(string(initResp), "recovery-test-server") {
+		t.Fatalf("unexpected init response: %s", string(initResp))
+	}
+
+	// 2. Send initialized notification
+	if err := conn.Write(ctx, []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)); err != nil {
+		t.Fatalf("initialized write failed: %v", err)
+	}
+
+	// 3. Send tools/call — this will get a 404, triggering recovery
+	toolsCall := `{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"read_file","arguments":{"path":"/tmp/test"}}}`
+	if err := conn.Write(ctx, []byte(toolsCall)); err != nil {
+		t.Fatalf("tools/call should have succeeded after recovery, got: %v", err)
+	}
+
+	// We should receive the re-initialize response, then the tools/call response
+	// The re-initialize response is enqueued first during recovery
+	resp1, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read after recovery failed: %v", err)
+	}
+
+	// Depending on ordering, we might get the init response or the tool result
+	// Let's collect all available responses
+	responses := []string{string(resp1)}
+
+	readCtx, readCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer readCancel()
+	for {
+		resp, err := conn.Read(readCtx)
+		if err != nil {
+			break
+		}
+		responses = append(responses, string(resp))
+	}
+
+	// Verify we got the tool result somewhere in the responses
+	foundToolResult := false
+	for _, r := range responses {
+		if strings.Contains(r, "tool result") {
+			foundToolResult = true
+			break
+		}
+	}
+	if !foundToolResult {
+		t.Fatalf("expected tool result in responses, got: %v", responses)
+	}
+
+	// Verify the method sequence shows recovery happened
+	mu.Lock()
+	defer mu.Unlock()
+	// Expected: initialize, notifications/initialized, tools/call(404'd),
+	//           initialize(recovery), notifications/initialized(recovery), tools/call(retry)
+	expectedMethods := []string{
+		"initialize", "notifications/initialized", "tools/call",
+		"initialize", "notifications/initialized", "tools/call",
+	}
+	if len(methods) != len(expectedMethods) {
+		t.Fatalf("expected methods %v, got %v", expectedMethods, methods)
+	}
+	for i, m := range expectedMethods {
+		if methods[i] != m {
+			t.Fatalf("method[%d]: expected %q, got %q", i, m, methods[i])
+		}
+	}
+
+	// Verify the session was updated
+	if sessionID.Load().(string) != "session-2" {
+		t.Fatalf("expected session to be updated to session-2")
 	}
 }

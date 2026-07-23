@@ -70,6 +70,7 @@ func bootstrap(ctx context.Context, cfg *cli.Config, ioStreams *IO) (context.Con
 		Headers:     headers,
 		TokenSource: authMgr,
 		Authorizer:  authz,
+		Logger:      logger,
 	})
 
 	sess := &session{
