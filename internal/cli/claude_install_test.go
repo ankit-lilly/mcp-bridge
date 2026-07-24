@@ -2,11 +2,15 @@ package cli
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
-func TestParseConfigureClaude_Minimal(t *testing.T) {
-	cfg, err := ParseConfigureClaude([]string{"--name", "remote-server", "https://example.com/mcp"})
+func TestConfigureClaudeOptionsBuildConfig_Minimal(t *testing.T) {
+	opts := NewConfigureClaudeOptions()
+	opts.Name = "remote-server"
+
+	cfg, err := opts.BuildConfig([]string{"https://example.com/mcp"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -25,17 +29,18 @@ func TestParseConfigureClaude_Minimal(t *testing.T) {
 	}
 }
 
-func TestParseConfigureClaude_PreservesBridgeArgs(t *testing.T) {
-	cfg, err := ParseConfigureClaude([]string{
-		"--name=remote-server",
-		"--claude-config", "/tmp/claude.json",
-		"--dry-run",
-		"--force",
-		"--",
+func TestConfigureClaudeOptionsBuildConfig_PreservesBridgeArgs(t *testing.T) {
+	opts := NewConfigureClaudeOptions()
+	opts.Name = "remote-server"
+	opts.ClaudeConfigPath = "/tmp/claude.json"
+	opts.DryRun = true
+	opts.Force = true
+
+	cfg, err := opts.BuildConfig([]string{
 		"--header", "Authorization:${API_KEY}",
 		"--allow-http",
+		"--callback-port", "8080",
 		"http://localhost:8080/mcp",
-		"8080",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -52,51 +57,52 @@ func TestParseConfigureClaude_PreservesBridgeArgs(t *testing.T) {
 	wantArgs := []string{
 		"--header", "Authorization:${API_KEY}",
 		"--allow-http",
+		"--callback-port", "8080",
 		"http://localhost:8080/mcp",
-		"8080",
 	}
 	if !reflect.DeepEqual(cfg.BridgeArgs, wantArgs) {
 		t.Fatalf("unexpected bridge args: %v", cfg.BridgeArgs)
 	}
 }
 
-func TestParseConfigureClaude_RejectsInspectMode(t *testing.T) {
-	_, err := ParseConfigureClaude([]string{"--name", "remote-server", "inspect", "https://example.com/mcp"})
-	if err == nil {
-		t.Fatal("expected inspect mode to be rejected")
-	}
-}
+func TestConfigureClaudeOptionsBuildConfig_RequiresName(t *testing.T) {
+	opts := NewConfigureClaudeOptions()
 
-func TestParseConfigureClaude_RequiresName(t *testing.T) {
-	_, err := ParseConfigureClaude([]string{"https://example.com/mcp"})
+	_, err := opts.BuildConfig([]string{"https://example.com/mcp"})
 	if err == nil {
 		t.Fatal("expected missing name to fail")
 	}
 }
 
-func TestParseConfigureClaude_SupportsPassthroughSeparator(t *testing.T) {
-	cfg, err := ParseConfigureClaude([]string{
-		"--name", "remote-server",
-		"--",
-		"--header", "X-Api-Key:${API_KEY}",
-		"https://example.com/mcp",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	wantArgs := []string{"--header", "X-Api-Key:${API_KEY}", "https://example.com/mcp"}
-	if !reflect.DeepEqual(cfg.BridgeArgs, wantArgs) {
-		t.Fatalf("unexpected bridge args: %v", cfg.BridgeArgs)
+func TestConfigureClaudeOptionsBuildConfig_RequiresBridgeArgs(t *testing.T) {
+	opts := NewConfigureClaudeOptions()
+	opts.Name = "remote-server"
+
+	_, err := opts.BuildConfig(nil)
+	if err == nil {
+		t.Fatal("expected missing bridge args to fail")
 	}
 }
 
-func TestParseConfigureClaude_RequiresSeparatorForBridgeFlags(t *testing.T) {
-	_, err := ParseConfigureClaude([]string{
-		"--name", "remote-server",
-		"--header", "X-Api-Key:${API_KEY}",
-		"https://example.com/mcp",
-	})
+func TestConfigureClaudeOptionsBuildConfig_RejectsSubcommands(t *testing.T) {
+	opts := NewConfigureClaudeOptions()
+	opts.Name = "remote-server"
+
+	_, err := opts.BuildConfig([]string{"inspect", "https://example.com/mcp"})
 	if err == nil {
-		t.Fatal("expected bridge flags before -- to fail")
+		t.Fatal("expected bridge subcommand to be rejected")
+	}
+	if !strings.Contains(err.Error(), `pass only bridge arguments after --`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConfigureClaudeOptionsBuildConfig_RejectsInvalidBridgeArgs(t *testing.T) {
+	opts := NewConfigureClaudeOptions()
+	opts.Name = "remote-server"
+
+	_, err := opts.BuildConfig([]string{"https://example.com/mcp", "8080"})
+	if err == nil {
+		t.Fatal("expected invalid bridge args to fail")
 	}
 }

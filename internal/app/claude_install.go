@@ -3,14 +3,15 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/ankit-lilly/mcp-bridge/internal/claudeconfig"
-	"github.com/ankit-lilly/mcp-bridge/internal/cli"
+	"github.com/ankit-lilly/mcp-bridge/internal/config"
 )
 
-func RunConfigureClaude(_ context.Context, cfg *cli.ClaudeInstallConfig, ioStreams *IO) error {
+func RunConfigureClaude(_ context.Context, cfg *config.ClaudeInstallConfig, stdout, stderr io.Writer) error {
 	configPath, err := resolveClaudeConfigPath(cfg.ClaudeConfigPath)
 	if err != nil {
 		return err
@@ -28,7 +29,7 @@ func RunConfigureClaude(_ context.Context, cfg *cli.ClaudeInstallConfig, ioStrea
 
 	result, err := doc.SetServer(cfg.Name, claudeconfig.ServerConfig{
 		Command: executable,
-		Args:    cfg.BridgeArgs,
+		Args:    append([]string{"bridge"}, cfg.BridgeArgs...),
 	}, cfg.Force)
 	if err != nil {
 		return err
@@ -39,14 +40,14 @@ func RunConfigureClaude(_ context.Context, cfg *cli.ClaudeInstallConfig, ioStrea
 		if err != nil {
 			return fmt.Errorf("rendering Claude Desktop config: %w", err)
 		}
-		if _, err := ioStreams.Stdout.Write(data); err != nil {
+		if _, err := stdout.Write(data); err != nil {
 			return fmt.Errorf("writing dry-run output: %w", err)
 		}
 		return nil
 	}
 
 	if result == claudeconfig.MergeUnchanged {
-		fmt.Fprintf(ioStreams.Stderr, "Claude Desktop config already contains %q at %s\n", cfg.Name, configPath)
+		fmt.Fprintf(stderr, "Claude Desktop config already contains %q at %s\n", cfg.Name, configPath)
 		return nil
 	}
 
@@ -58,7 +59,7 @@ func RunConfigureClaude(_ context.Context, cfg *cli.ClaudeInstallConfig, ioStrea
 	if result == claudeconfig.MergeUpdated {
 		action = "Updated"
 	}
-	fmt.Fprintf(ioStreams.Stderr, "%s Claude Desktop server %q in %s\n", action, cfg.Name, configPath)
+	fmt.Fprintf(stderr, "%s Claude Desktop server %q in %s\n", action, cfg.Name, configPath)
 	return nil
 }
 

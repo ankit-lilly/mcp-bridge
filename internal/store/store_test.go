@@ -7,14 +7,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ankit-lilly/mcp-bridge/internal/cli"
+	"github.com/ankit-lilly/mcp-bridge/internal/config"
+	"github.com/ankit-lilly/mcp-bridge/internal/fsutil"
 )
 
 func TestConfigHash_Stable(t *testing.T) {
-	cfg := &cli.Config{
+	cfg := &config.BridgeConfig{
 		ServerURL: "https://example.com/mcp",
 		Resource:  "https://api.example.com",
-		Headers:   []cli.Header{{Key: "X-A", Value: "1"}, {Key: "X-B", Value: "2"}},
+		Headers:   []config.Header{{Key: "X-A", Value: "1"}, {Key: "X-B", Value: "2"}},
 	}
 	h1 := cfg.Hash()
 	h2 := cfg.Hash()
@@ -27,13 +28,13 @@ func TestConfigHash_Stable(t *testing.T) {
 }
 
 func TestConfigHash_OrderIndependent(t *testing.T) {
-	cfg1 := &cli.Config{
+	cfg1 := &config.BridgeConfig{
 		ServerURL: "https://example.com/mcp",
-		Headers:   []cli.Header{{Key: "X-A", Value: "1"}, {Key: "X-B", Value: "2"}},
+		Headers:   []config.Header{{Key: "X-A", Value: "1"}, {Key: "X-B", Value: "2"}},
 	}
-	cfg2 := &cli.Config{
+	cfg2 := &config.BridgeConfig{
 		ServerURL: "https://example.com/mcp",
-		Headers:   []cli.Header{{Key: "X-B", Value: "2"}, {Key: "X-A", Value: "1"}},
+		Headers:   []config.Header{{Key: "X-B", Value: "2"}, {Key: "X-A", Value: "1"}},
 	}
 	if cfg1.Hash() != cfg2.Hash() {
 		t.Fatal("hash must be independent of header order")
@@ -41,8 +42,8 @@ func TestConfigHash_OrderIndependent(t *testing.T) {
 }
 
 func TestConfigHash_ChangeSensitive(t *testing.T) {
-	cfg1 := &cli.Config{ServerURL: "https://example.com/mcp"}
-	cfg2 := &cli.Config{ServerURL: "https://example.com/mcp", Resource: "urn:api"}
+	cfg1 := &config.BridgeConfig{ServerURL: "https://example.com/mcp"}
+	cfg2 := &config.BridgeConfig{ServerURL: "https://example.com/mcp", Resource: "urn:api"}
 	if cfg1.Hash() == cfg2.Hash() {
 		t.Fatal("different resource must yield different hash")
 	}
@@ -118,7 +119,7 @@ func TestStore_ClientRoundtrip(t *testing.T) {
 func TestAtomicWrite_SecurePerms(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.json")
-	if err := atomicWrite(path, []byte("data"), 0600); err != nil {
+	if err := fsutil.AtomicWrite(path, []byte("data"), 0600); err != nil {
 		t.Fatalf("write failed: %v", err)
 	}
 	info, _ := os.Stat(path)

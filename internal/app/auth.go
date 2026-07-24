@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/ankit-lilly/mcp-bridge/internal/cli"
+	"github.com/ankit-lilly/mcp-bridge/internal/config"
 	"github.com/ankit-lilly/mcp-bridge/internal/oauth"
 	"github.com/ankit-lilly/mcp-bridge/internal/remote"
 	"github.com/ankit-lilly/mcp-bridge/internal/store"
@@ -22,7 +22,7 @@ const (
 	derivedCallbackPortSpan = 50000
 )
 
-func buildAuth(cfg *cli.Config, s *store.Store, configKey string, httpClient *http.Client, logger *slog.Logger, stderr io.Writer) (*oauth.Manager, remote.Authorizer) {
+func buildAuth(cfg *config.BridgeConfig, s *store.Store, configKey string, httpClient *http.Client, logger *slog.Logger, stderr io.Writer) (*oauth.Manager, remote.Authorizer) {
 	authMgr := oauth.NewManager(oauth.ManagerConfig{
 		ServerURL:        cfg.ServerURL,
 		Resource:         cfg.Resource,
@@ -114,7 +114,7 @@ func callbackHost(host string) string {
 	return "127.0.0.1"
 }
 
-func callbackPort(cfg *cli.Config, configKey string) int {
+func callbackPort(cfg *config.BridgeConfig, configKey string) int {
 	if cfg.CallbackPort != 0 {
 		return cfg.CallbackPort
 	}
@@ -141,7 +141,7 @@ func loadPersistedToken(s *store.Store, configKey string, logger *slog.Logger) *
 	}
 }
 
-func loadPersistedClientInfo(cfg *cli.Config, s *store.Store, configKey string, logger *slog.Logger) *oauth.ClientRegistration {
+func loadPersistedClientInfo(cfg *config.BridgeConfig, s *store.Store, configKey string, logger *slog.Logger) *oauth.ClientRegistration {
 	if cfg.StaticOAuthClientInfo != nil {
 		var clientInfo oauth.ClientRegistration
 		if err := json.Unmarshal(cfg.StaticOAuthClientInfo, &clientInfo); err == nil {

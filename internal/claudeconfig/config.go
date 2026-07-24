@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+
+	"github.com/ankit-lilly/mcp-bridge/internal/fsutil"
 )
 
 // ServerConfig is a Claude Desktop mcpServers entry.
@@ -154,7 +156,7 @@ func (d *Document) Write(path string) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("creating Claude Desktop config directory: %w", err)
 	}
-	return atomicWrite(path, data, 0600)
+	return fsutil.AtomicWrite(path, data, 0600)
 }
 
 func isJSONNull(raw []byte) bool {
@@ -171,29 +173,4 @@ func jsonSemanticallyEqual(a, b []byte) (bool, error) {
 		return false, err
 	}
 	return reflect.DeepEqual(left, right), nil
-}
-
-func atomicWrite(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return os.Rename(tmpName, path)
 }

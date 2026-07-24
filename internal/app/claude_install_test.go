@@ -10,7 +10,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/ankit-lilly/mcp-bridge/internal/cli"
+	"github.com/ankit-lilly/mcp-bridge/internal/config"
 )
 
 func TestRunConfigureClaude_DryRun(t *testing.T) {
@@ -18,12 +18,12 @@ func TestRunConfigureClaude_DryRun(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	err := RunConfigureClaude(context.Background(), &cli.ClaudeInstallConfig{
+	err := RunConfigureClaude(context.Background(), &config.ClaudeInstallConfig{
 		Name:             "remote-server",
 		ClaudeConfigPath: configPath,
 		DryRun:           true,
 		BridgeArgs:       []string{"https://example.com/mcp"},
-	}, &IO{Stdout: &stdout, Stderr: &stderr})
+	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,12 +47,13 @@ func TestRunConfigureClaude_WritesMergedConfig(t *testing.T) {
 		t.Fatalf("seed write failed: %v", err)
 	}
 
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err := RunConfigureClaude(context.Background(), &cli.ClaudeInstallConfig{
+	err := RunConfigureClaude(context.Background(), &config.ClaudeInstallConfig{
 		Name:             "remote-server",
 		ClaudeConfigPath: configPath,
 		BridgeArgs:       []string{"--header", "X-Test:${TOKEN}", "https://example.com/mcp"},
-	}, &IO{Stdout: &bytes.Buffer{}, Stderr: &stderr})
+	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestRunConfigureClaude_WritesMergedConfig(t *testing.T) {
 	if entry.Command == "" {
 		t.Fatalf("expected executable command path: %s", string(data))
 	}
-	wantArgs := []string{"--header", "X-Test:${TOKEN}", "https://example.com/mcp"}
+	wantArgs := []string{"bridge", "--header", "X-Test:${TOKEN}", "https://example.com/mcp"}
 	if !reflect.DeepEqual(entry.Args, wantArgs) {
 		t.Fatalf("unexpected args: %v", entry.Args)
 	}

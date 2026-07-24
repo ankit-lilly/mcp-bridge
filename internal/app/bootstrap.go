@@ -11,35 +11,23 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ankit-lilly/mcp-bridge/internal/cli"
+	"github.com/ankit-lilly/mcp-bridge/internal/config"
 	"github.com/ankit-lilly/mcp-bridge/internal/logx"
 	"github.com/ankit-lilly/mcp-bridge/internal/remote"
 	"github.com/ankit-lilly/mcp-bridge/internal/store"
 )
 
-type IO struct {
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
-}
-
-func DefaultIO() *IO {
-	return &IO{
-		Stdin:  os.Stdin,
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-	}
-}
-
 type session struct {
 	connector *remote.HTTPConnector
 	logger    *slog.Logger
 	cancel    context.CancelFunc
-	io        *IO
+	stdin     io.Reader
+	stdout    io.Writer
+	stderr    io.Writer
 }
 
-func bootstrap(ctx context.Context, cfg *cli.Config, ioStreams *IO) (context.Context, *session, error) {
-	logger := logx.New(logx.Config{Debug: cfg.Debug, Silent: cfg.Silent, Output: ioStreams.Stderr})
+func bootstrap(ctx context.Context, cfg *config.BridgeConfig, stdin io.Reader, stdout, stderr io.Writer) (context.Context, *session, error) {
+	logger := logx.New(logx.Config{Debug: cfg.Debug, Silent: cfg.Silent, Output: stderr})
 
 	storeDir, err := store.DefaultDir()
 	if err != nil {
@@ -62,7 +50,7 @@ func bootstrap(ctx context.Context, cfg *cli.Config, ioStreams *IO) (context.Con
 		headers[h.Key] = h.Value
 	}
 
-	authMgr, authz := buildAuth(cfg, s, configKey, httpClient, logger, ioStreams.Stderr)
+	authMgr, authz := buildAuth(cfg, s, configKey, httpClient, logger, stderr)
 
 	connector := remote.NewHTTPConnector(remote.HTTPConnectorConfig{
 		Client:      httpClient,
@@ -77,12 +65,14 @@ func bootstrap(ctx context.Context, cfg *cli.Config, ioStreams *IO) (context.Con
 		connector: connector,
 		logger:    logger,
 		cancel:    cancel,
-		io:        ioStreams,
+		stdin:     stdin,
+		stdout:    stdout,
+		stderr:    stderr,
 	}
 	return ctx, sess, nil
 }
 
-func buildHTTPClient(cfg *cli.Config) *http.Client {
+func buildHTTPClient(cfg *config.BridgeConfig) *http.Client {
 	transport := &http.Transport{
 		MaxIdleConns:        10,
 		MaxIdleConnsPerHost: 10,

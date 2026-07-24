@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/ankit-lilly/mcp-bridge/internal/fsutil"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -95,31 +97,5 @@ func saveJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(path, data, 0600)
-}
-
-// atomicWrite writes data to a temp file and renames it into place.
-func atomicWrite(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return fsutil.AtomicWrite(path, data, 0600)
 }

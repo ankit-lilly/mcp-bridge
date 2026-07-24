@@ -3,13 +3,46 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/ankit-lilly/mcp-bridge/internal/bridge"
-	"github.com/ankit-lilly/mcp-bridge/internal/cli"
+	"github.com/ankit-lilly/mcp-bridge/internal/config"
 )
 
-func RunBridge(ctx context.Context, cfg *cli.Config, ioStreams *IO) error {
-	ctx, sess, err := bootstrap(ctx, cfg, ioStreams)
+const (
+	inspectInitializeRPC = `{
+		"jsonrpc": "2.0",
+		"method": "initialize",
+		"id": 1,
+		"params": {
+			"protocolVersion": "2024-11-05",
+			"capabilities": {},
+			"clientInfo": {
+				"name": "mcp-bridge-inspect",
+				"version": "1.0"
+			}
+		}
+	}`
+	inspectInitializedRPC = `{"jsonrpc":"2.0","method":"notifications/initialized"}`
+	inspectToolsListRPC   = `{"jsonrpc":"2.0","method":"tools/list","id":2}`
+	inspectResourcesRPC   = `{"jsonrpc":"2.0","method":"resources/list","id":3}`
+	inspectPromptsListRPC = `{"jsonrpc":"2.0","method":"prompts/list","id":4}`
+)
+
+type inspectQuery struct {
+	method  string
+	label   string
+	request string
+}
+
+var inspectQueries = []inspectQuery{
+	{method: "tools/list", label: "Tools", request: inspectToolsListRPC},
+	{method: "resources/list", label: "Resources", request: inspectResourcesRPC},
+	{method: "prompts/list", label: "Prompts", request: inspectPromptsListRPC},
+}
+
+func RunBridge(ctx context.Context, cfg *config.BridgeConfig, stdin io.Reader, stdout, stderr io.Writer) error {
+	ctx, sess, err := bootstrap(ctx, cfg, stdin, stdout, stderr)
 	if err != nil {
 		return err
 	}
@@ -22,7 +55,7 @@ func RunBridge(ctx context.Context, cfg *cli.Config, ioStreams *IO) error {
 	defer remoteConn.Close()
 
 	relay := bridge.NewRelay(
-		bridge.NewStdioConn(sess.io.Stdin, sess.io.Stdout),
+		bridge.NewStdioConn(sess.stdin, sess.stdout),
 		remoteConn,
 		bridge.RelayConfig{
 			Logger:   sess.logger,
@@ -35,8 +68,8 @@ func RunBridge(ctx context.Context, cfg *cli.Config, ioStreams *IO) error {
 }
 
 // RunInspect is the main entry point for the diagnostic inspect mode.
-func RunInspect(ctx context.Context, cfg *cli.Config, ioStreams *IO) error {
-	ctx, sess, err := bootstrap(ctx, cfg, ioStreams)
+func RunInspect(ctx context.Context, cfg *config.BridgeConfig, stdin io.Reader, stdout, stderr io.Writer) error {
+	ctx, sess, err := bootstrap(ctx, cfg, stdin, stdout, stderr)
 	if err != nil {
 		return err
 	}
@@ -48,7 +81,7 @@ func RunInspect(ctx context.Context, cfg *cli.Config, ioStreams *IO) error {
 	}
 	defer conn.Close()
 
-	if err := conn.Write(ctx, []byte(`{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"mcp-bridge-inspect","version":"1.0"}}}`)); err != nil {
+	if err := conn.Write(ctx, []byte(inspectInitializeRPC)); err != nil {
 		return fmt.Errorf("sending initialize: %w", err)
 	}
 
@@ -56,31 +89,22 @@ func RunInspect(ctx context.Context, cfg *cli.Config, ioStreams *IO) error {
 	if err != nil {
 		return fmt.Errorf("reading initialize response: %w", err)
 	}
-	fmt.Fprintf(sess.io.Stderr, "Connected to %s using streamable HTTP\n", cfg.ServerURL)
-	fmt.Fprintf(sess.io.Stderr, "Server capabilities: %s\n", string(resp))
+	fmt.Fprintf(sess.stderr, "Connected to %s using streamable HTTP\n", cfg.ServerURL)
+	fmt.Fprintf(sess.stderr, "Server capabilities: %s\n", string(resp))
 
-	if err := conn.Write(ctx, []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)); err != nil {
+	if err := conn.Write(ctx, []byte(inspectInitializedRPC)); err != nil {
 		return fmt.Errorf("sending initialized: %w", err)
 	}
 
-	for _, query := range []struct {
-		method string
-		id     int
-		label  string
-	}{
-		{"tools/list", 2, "Tools"},
-		{"resources/list", 3, "Resources"},
-		{"prompts/list", 4, "Prompts"},
-	} {
-		req := fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","id":%d}`, query.method, query.id)
-		if err := conn.Write(ctx, []byte(req)); err != nil {
+	for _, query := range inspectQueries {
+		if err := conn.Write(ctx, []byte(query.request)); err != nil {
 			return fmt.Errorf("sending %s: %w", query.method, err)
 		}
 		resp, err = conn.Read(ctx)
 		if err != nil {
-			fmt.Fprintf(sess.io.Stderr, "No %s response (may not be supported)\n", query.method)
+			fmt.Fprintf(sess.stderr, "No %s response (may not be supported)\n", query.method)
 		} else {
-			fmt.Fprintf(sess.io.Stderr, "%s: %s\n", query.label, string(resp))
+			fmt.Fprintf(sess.stderr, "%s: %s\n", query.label, string(resp))
 		}
 	}
 

@@ -7,20 +7,20 @@ import (
 	"time"
 )
 
-func TestParse_MinimalValid(t *testing.T) {
-	cfg, err := Parse([]string{"https://example.com/mcp"})
+func TestParseBridgeArgs_MinimalValid(t *testing.T) {
+	cfg, err := parseBridgeArgs([]string{"https://example.com/mcp"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.ServerURL != "https://example.com/mcp" {
 		t.Fatalf("unexpected server URL: %s", cfg.ServerURL)
 	}
-	if cfg.AuthTimeout != 120*time.Second {
-		t.Fatalf("expected default auth timeout 120s, got %v", cfg.AuthTimeout)
+	if cfg.AuthTimeout != 2*time.Minute {
+		t.Fatalf("expected default auth timeout 2m, got %v", cfg.AuthTimeout)
 	}
 }
 
-func TestParse_AllFlags(t *testing.T) {
+func TestParseBridgeArgs_AllFlags(t *testing.T) {
 	args := []string{
 		"--header", "X-Api-Key:my-key",
 		"--header", "X-Custom:val",
@@ -30,10 +30,10 @@ func TestParse_AllFlags(t *testing.T) {
 		"--debug",
 		"--enable-proxy",
 		"--resource", "https://api.example.com",
-		"--auth-timeout", "60",
+		"--auth-timeout", "1m",
 		"https://example.com/mcp",
 	}
-	cfg, err := Parse(args)
+	cfg, err := parseBridgeArgs(args)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,92 +55,88 @@ func TestParse_AllFlags(t *testing.T) {
 	if cfg.Resource != "https://api.example.com" {
 		t.Fatalf("unexpected resource: %s", cfg.Resource)
 	}
-	if cfg.AuthTimeout != 60*time.Second {
-		t.Fatalf("expected 60s timeout, got %v", cfg.AuthTimeout)
+	if cfg.AuthTimeout != time.Minute {
+		t.Fatalf("expected 1m timeout, got %v", cfg.AuthTimeout)
 	}
 }
 
-func TestParse_PositionalCallbackPort(t *testing.T) {
-	cfg, err := Parse([]string{"https://example.com/mcp", "8080"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.CallbackPort != 8080 {
-		t.Fatalf("expected port 8080, got %d", cfg.CallbackPort)
-	}
-}
-
-func TestParse_MissingURL(t *testing.T) {
-	_, err := Parse([]string{})
+func TestParseBridgeArgs_MissingURL(t *testing.T) {
+	_, err := parseBridgeArgs([]string{})
 	if err == nil {
 		t.Fatal("expected error for missing URL")
 	}
 }
 
-func TestParse_UnsupportedTransportFlag(t *testing.T) {
+func TestParseBridgeArgs_RejectsExtraPositionals(t *testing.T) {
+	_, err := parseBridgeArgs([]string{"https://example.com/mcp", "8080"})
+	if err == nil {
+		t.Fatal("expected extra positional args to fail")
+	}
+}
+
+func TestParseBridgeArgs_UnsupportedTransportFlag(t *testing.T) {
 	for _, args := range [][]string{
 		{"--transport", "http-first", "https://example.com/mcp"},
 		{"--transport=http-first", "https://example.com/mcp"},
 	} {
-		_, err := Parse(args)
+		_, err := parseBridgeArgs(args)
 		if err == nil {
 			t.Fatalf("expected error for unsupported transport flag: %v", args)
 		}
 	}
 }
 
-func TestParse_HTTPNotAllowed(t *testing.T) {
-	_, err := Parse([]string{"http://remote.example.com/mcp"})
+func TestParseBridgeArgs_HTTPNotAllowed(t *testing.T) {
+	_, err := parseBridgeArgs([]string{"http://remote.example.com/mcp"})
 	if err == nil {
 		t.Fatal("expected error for HTTP on non-loopback host")
 	}
 }
 
-func TestParse_HTTPAllowedForLoopback(t *testing.T) {
-	_, err := Parse([]string{"http://localhost/mcp"})
+func TestParseBridgeArgs_HTTPAllowedForLoopback(t *testing.T) {
+	_, err := parseBridgeArgs([]string{"http://localhost/mcp"})
 	if err != nil {
 		t.Fatalf("loopback HTTP should be allowed: %v", err)
 	}
 }
 
-func TestParse_HTTPAllowedWithFlag(t *testing.T) {
-	_, err := Parse([]string{"--allow-http", "http://remote.example.com/mcp"})
+func TestParseBridgeArgs_HTTPAllowedWithFlag(t *testing.T) {
+	_, err := parseBridgeArgs([]string{"--allow-http", "http://remote.example.com/mcp"})
 	if err != nil {
 		t.Fatalf("--allow-http should permit HTTP: %v", err)
 	}
 }
 
-func TestParse_DebugAndSilentConflict(t *testing.T) {
-	_, err := Parse([]string{"--debug", "--silent", "https://example.com/mcp"})
+func TestParseBridgeArgs_DebugAndSilentConflict(t *testing.T) {
+	_, err := parseBridgeArgs([]string{"--debug", "--silent", "https://example.com/mcp"})
 	if err == nil {
 		t.Fatal("expected error for debug+silent conflict")
 	}
 }
 
 func TestParseHeader(t *testing.T) {
-	h, err := ParseHeader("Authorization:Bearer token123")
+	h, err := parseHeader("Authorization:******")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if h.Key != "Authorization" {
 		t.Fatalf("unexpected key: %s", h.Key)
 	}
-	if h.Value != "Bearer token123" {
+	if h.Value != "******" {
 		t.Fatalf("unexpected value: %s", h.Value)
 	}
 }
 
 func TestParseHeader_Invalid(t *testing.T) {
-	_, err := ParseHeader("no-colon")
+	_, err := parseHeader("no-colon")
 	if err == nil {
 		t.Fatal("expected error for missing colon")
 	}
 }
 
 func TestExpandEnv(t *testing.T) {
-	os.Setenv("TEST_MCP_VAR", "expanded")
-	defer os.Unsetenv("TEST_MCP_VAR")
-	result := ExpandEnv("prefix-${TEST_MCP_VAR}-suffix")
+	t.Setenv("TEST_MCP_VAR", "expanded")
+	result := expandEnv("prefix-${TEST_MCP_VAR}-suffix")
 	if result != "prefix-expanded-suffix" {
 		t.Fatalf("unexpected expansion: %s", result)
 	}
@@ -157,7 +153,9 @@ func TestLoadJSONOrFile(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "client.json")
-	os.WriteFile(path, []byte(`{"id":"from-file"}`), 0644)
+	if err := os.WriteFile(path, []byte(`{"id":"from-file"}`), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
 	data, err = loadJSONOrFile("@" + path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

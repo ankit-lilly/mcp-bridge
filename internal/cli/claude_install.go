@@ -2,117 +2,52 @@ package cli
 
 import (
 	"errors"
-	"flag"
-	"slices"
 	"strings"
+
+	"github.com/ankit-lilly/mcp-bridge/internal/config"
+	"github.com/spf13/pflag"
 )
 
-type ClaudeInstallConfig struct {
+type ConfigureClaudeOptions struct {
 	Name             string
 	ClaudeConfigPath string
 	DryRun           bool
 	Force            bool
-	BridgeArgs       []string
 }
 
-func ParseConfigureClaude(args []string) (*ClaudeInstallConfig, error) {
-	installerArgs, bridgeArgs, hasPassthrough := splitPassthroughArgs(args)
-	if !hasPassthrough && containsBridgeFlags(installerArgs) {
-		return nil, errors.New("bridge flags for configure-claude must be passed after --")
-	}
+func NewConfigureClaudeOptions() *ConfigureClaudeOptions {
+	return &ConfigureClaudeOptions{}
+}
 
-	fs, values := newConfigureClaudeFlagSet()
-	if err := fs.Parse(installerArgs); err != nil {
-		return nil, err
-	}
-	if hasPassthrough && len(fs.Args()) > 0 {
-		return nil, errors.New("when using configure-claude -- ..., put all bridge arguments after --")
-	}
+func (o *ConfigureClaudeOptions) AddFlags(fs *pflag.FlagSet) {
+	fs.StringVar(&o.Name, "name", "", "Claude Desktop server name")
+	fs.StringVar(&o.ClaudeConfigPath, "claude-config", "", "Claude Desktop config path")
+	fs.BoolVar(&o.DryRun, "dry-run", false, "Print the merged Claude config without writing")
+	fs.BoolVar(&o.Force, "force", false, "Replace an existing Claude server entry")
+}
 
-	bridgeArgs = append(fs.Args(), bridgeArgs...)
-	bridgeArgs, err := normalizeBridgeArgs(bridgeArgs)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := parseBridgeCommand("configure-claude", bridgeUsageLine, bridgeArgs); err != nil {
-		return nil, err
-	}
-
-	cfg := &ClaudeInstallConfig{
-		Name:             values.name,
-		ClaudeConfigPath: values.claudeConfigPath,
-		DryRun:           values.dryRun,
-		Force:            values.force,
-		BridgeArgs:       append([]string(nil), bridgeArgs...),
-	}
-	if strings.TrimSpace(cfg.Name) == "" {
+func (o *ConfigureClaudeOptions) BuildConfig(bridgeArgs []string) (*config.ClaudeInstallConfig, error) {
+	if strings.TrimSpace(o.Name) == "" {
 		return nil, errors.New("--name is required")
 	}
-	if cfg.ClaudeConfigPath != "" && strings.TrimSpace(cfg.ClaudeConfigPath) == "" {
+	if o.ClaudeConfigPath != "" && strings.TrimSpace(o.ClaudeConfigPath) == "" {
 		return nil, errors.New("--claude-config must not be empty")
 	}
-
-	return cfg, nil
-}
-
-type configureClaudeFlagValues struct {
-	name             string
-	claudeConfigPath string
-	dryRun           bool
-	force            bool
-}
-
-func newConfigureClaudeFlagSet() (*flag.FlagSet, *configureClaudeFlagValues) {
-	values := &configureClaudeFlagValues{}
-	fs := flag.NewFlagSet("configure-claude", flag.ContinueOnError)
-	setFlagSetUsage(fs, configureClaudeUsageLine, configureClaudePassthroughUsageLine)
-	fs.StringVar(&values.name, "name", "", "Claude Desktop server name")
-	fs.StringVar(&values.claudeConfigPath, "claude-config", "", "Claude Desktop config path")
-	fs.BoolVar(&values.dryRun, "dry-run", false, "Print the merged Claude config without writing")
-	fs.BoolVar(&values.force, "force", false, "Replace an existing Claude server entry")
-	return fs, values
-}
-
-func splitPassthroughArgs(args []string) ([]string, []string, bool) {
-	for i, arg := range args {
-		if arg == "--" {
-			return args[:i], args[i+1:], true
-		}
+	if len(bridgeArgs) == 0 {
+		return nil, errors.New("bridge arguments are required after --")
 	}
-	return args, nil, false
-}
-
-func normalizeBridgeArgs(args []string) ([]string, error) {
-	if len(args) == 0 {
-		return nil, errors.New("server URL is required")
+	if bridgeArgs[0] == "bridge" || bridgeArgs[0] == "inspect" {
+		return nil, errors.New(`pass only bridge arguments after --, not the "bridge" or "inspect" subcommand`)
+	}
+	if _, err := parseBridgeArgs(bridgeArgs); err != nil {
+		return nil, err
 	}
 
-	switch args[0] {
-	case "bridge":
-		args = args[1:]
-	case "inspect":
-		return nil, errors.New(`"inspect" is not supported for configure-claude; configure the default bridge mode instead`)
-	}
-
-	if len(args) == 0 {
-		return nil, errors.New("server URL is required")
-	}
-	return args, nil
-}
-
-func containsBridgeFlags(args []string) bool {
-	return slices.ContainsFunc(args, isBridgeFlag)
-}
-
-func isBridgeFlag(arg string) bool {
-	if !strings.HasPrefix(arg, "--") {
-		return false
-	}
-
-	name := strings.TrimPrefix(arg, "--")
-	if idx := strings.IndexByte(name, '='); idx >= 0 {
-		name = name[:idx]
-	}
-	_, ok := bridgeFlagNames[name]
-	return ok
+	return &config.ClaudeInstallConfig{
+		Name:             o.Name,
+		ClaudeConfigPath: o.ClaudeConfigPath,
+		DryRun:           o.DryRun,
+		Force:            o.Force,
+		BridgeArgs:       append([]string(nil), bridgeArgs...),
+	}, nil
 }
