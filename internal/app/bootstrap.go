@@ -15,6 +15,7 @@ import (
 	"github.com/ankit-lilly/mcp-bridge/internal/logx"
 	"github.com/ankit-lilly/mcp-bridge/internal/remote"
 	"github.com/ankit-lilly/mcp-bridge/internal/store"
+	"github.com/ankit-lilly/mcp-bridge/internal/version"
 )
 
 type session struct {
@@ -59,6 +60,7 @@ func bootstrap(ctx context.Context, cfg *config.BridgeConfig, stdin io.Reader, s
 		TokenSource: authMgr,
 		Authorizer:  authz,
 		Logger:      logger,
+		UserAgent:   "mcp-bridge/" + version.Version,
 	})
 
 	sess := &session{

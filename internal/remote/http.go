@@ -24,6 +24,7 @@ type HTTPConnector struct {
 	tokenSource TokenSource
 	authorizer  Authorizer
 	logger      *slog.Logger
+	userAgent   string
 }
 
 type HTTPConnectorConfig struct {
@@ -33,6 +34,7 @@ type HTTPConnectorConfig struct {
 	TokenSource TokenSource
 	Authorizer  Authorizer
 	Logger      *slog.Logger
+	UserAgent   string
 }
 
 func NewHTTPConnector(cfg HTTPConnectorConfig) *HTTPConnector {
@@ -51,6 +53,7 @@ func NewHTTPConnector(cfg HTTPConnectorConfig) *HTTPConnector {
 		tokenSource: cfg.TokenSource,
 		authorizer:  cfg.Authorizer,
 		logger:      logger,
+		userAgent:   cfg.UserAgent,
 	}
 }
 
@@ -60,6 +63,7 @@ func (c *HTTPConnector) Connect(_ context.Context) (bridge.ByteConn, error) {
 		inbound:   make(chan []byte, 64),
 		done:      make(chan struct{}),
 		logger:    c.logger,
+		userAgent: c.userAgent,
 	}, nil
 }
 
@@ -76,6 +80,7 @@ type streamableConn struct {
 	initialized     bool
 	initFrame       []byte // stored initialize request for session recovery
 	recovering      bool   // guards against infinite recovery loops
+	userAgent       string // updated with client name from initialize
 
 	streamMu     sync.Mutex
 	streamCancel context.CancelFunc
@@ -104,6 +109,7 @@ func (c *streamableConn) Write(ctx context.Context, frame []byte) error {
 		c.mu.Lock()
 		c.initFrame = bytes.Clone(frame)
 		c.mu.Unlock()
+		c.extractClientName(frame)
 	}
 
 	resp, err := c.doPost(ctx, frame)
@@ -469,6 +475,46 @@ func (c *streamableConn) applyHeaders(req *http.Request) {
 			req.Header.Set("Authorization", "Bearer "+tok)
 		}
 	}
+	c.mu.Lock()
+	ua := c.userAgent
+	c.mu.Unlock()
+	if ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+}
+
+// extractClientName reads clientInfo.name from the initialize frame and
+// prepends it to the User-Agent string so the remote server sees who the
+// actual MCP client is (e.g. "Claude Desktop mcp-bridge/v1.2.3").
+func (c *streamableConn) extractClientName(frame []byte) {
+	var msg struct {
+		Params *struct {
+			ClientInfo *struct {
+				Name    string `json:"name"`
+				Version string `json:"version"`
+			} `json:"clientInfo"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(frame, &msg); err != nil {
+		return
+	}
+	if msg.Params == nil || msg.Params.ClientInfo == nil {
+		return
+	}
+
+	clientName := msg.Params.ClientInfo.Name
+	if clientName == "" {
+		return
+	}
+
+	c.mu.Lock()
+	base := c.userAgent
+	if base != "" {
+		c.userAgent = clientName + " " + base
+	} else {
+		c.userAgent = clientName
+	}
+	c.mu.Unlock()
 }
 
 func (c *streamableConn) enqueueFrame(frame []byte) bool {
