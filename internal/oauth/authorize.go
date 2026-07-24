@@ -34,7 +34,12 @@ func (m *Manager) Authorize(ctx context.Context, challenges ...*ChallengeInfo) (
 		return nil, nil, fmt.Errorf("metadata discovery: %w", err)
 	}
 
-	if m.currentClientInfo() == nil {
+	if m.staticClientInfo {
+		// Client info was provided via --static-oauth-client-info; skip registration.
+	} else {
+		// Always (re-)register: the server may have lost our previous registration
+		// after a restart, and a stale client_id would cause "Invalid client" errors
+		// at the authorization endpoint (which won't redirect back per RFC 6749).
 		if err := m.registerClient(ctx); err != nil {
 			return nil, nil, fmt.Errorf("client registration: %w", err)
 		}

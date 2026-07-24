@@ -24,17 +24,18 @@ const (
 
 func buildAuth(cfg *cli.Config, s *store.Store, configKey string, httpClient *http.Client, logger *slog.Logger, stderr io.Writer) (*oauth.Manager, remote.Authorizer) {
 	authMgr := oauth.NewManager(oauth.ManagerConfig{
-		ServerURL:      cfg.ServerURL,
-		Resource:       cfg.Resource,
-		Host:           callbackHost(cfg.Host),
-		CallbackPort:   callbackPort(cfg, configKey),
-		AuthTimeout:    cfg.AuthTimeout,
-		Logger:         logger,
-		Client:         httpClient,
-		Stderr:         stderr,
-		ClientMetadata: cfg.StaticOAuthClientMetadata,
-		ClientInfo:     loadPersistedClientInfo(cfg, s, configKey, logger),
-		Token:          loadPersistedToken(s, configKey, logger),
+		ServerURL:        cfg.ServerURL,
+		Resource:         cfg.Resource,
+		Host:             callbackHost(cfg.Host),
+		CallbackPort:     callbackPort(cfg, configKey),
+		AuthTimeout:      cfg.AuthTimeout,
+		Logger:           logger,
+		Client:           httpClient,
+		Stderr:           stderr,
+		ClientMetadata:   cfg.StaticOAuthClientMetadata,
+		ClientInfo:       loadPersistedClientInfo(cfg, s, configKey, logger),
+		Token:            loadPersistedToken(s, configKey, logger),
+		StaticClientInfo: cfg.StaticOAuthClientInfo != nil,
 		OnTokenChange: func(ctx context.Context, tok *oauth.Token) error {
 			return s.SaveTokens(ctx, configKey, &store.TokenSet{
 				AccessToken:  tok.AccessToken,

@@ -13,14 +13,15 @@ import (
 const defaultCallbackPort = 19876
 
 type Manager struct {
-	serverURL    string
-	resource     string
-	host         string
-	callbackPort int
-	authTimeout  time.Duration
-	logger       *slog.Logger
-	client       *http.Client
-	stderr       io.Writer
+	serverURL        string
+	resource         string
+	host             string
+	callbackPort     int
+	authTimeout      time.Duration
+	logger           *slog.Logger
+	client           *http.Client
+	stderr           io.Writer
+	staticClientInfo bool // true if client info was provided via --static-oauth-client-info (skip re-registration)
 
 	stateMu       sync.Mutex
 	token         *Token
@@ -58,18 +59,19 @@ type ClientRegistration struct {
 
 // ManagerConfig configures the OAuth Manager.
 type ManagerConfig struct {
-	ServerURL      string
-	Resource       string
-	Host           string
-	CallbackPort   int
-	AuthTimeout    time.Duration
-	Logger         *slog.Logger
-	Client         *http.Client
-	Stderr         io.Writer
-	ClientMetadata json.RawMessage
-	ClientInfo     *ClientRegistration
-	Token          *Token
-	OnTokenChange  func(context.Context, *Token) error
+	ServerURL        string
+	Resource         string
+	Host             string
+	CallbackPort     int
+	AuthTimeout      time.Duration
+	Logger           *slog.Logger
+	Client           *http.Client
+	Stderr           io.Writer
+	ClientMetadata   json.RawMessage
+	ClientInfo       *ClientRegistration
+	Token            *Token
+	OnTokenChange    func(context.Context, *Token) error
+	StaticClientInfo bool // true if ClientInfo was provided via --static-oauth-client-info
 }
 
 // NewManager creates a new OAuth Manager.
@@ -87,18 +89,19 @@ func NewManager(cfg ManagerConfig) *Manager {
 		stderr = io.Discard
 	}
 	return &Manager{
-		serverURL:      cfg.ServerURL,
-		resource:       cfg.Resource,
-		host:           cfg.Host,
-		callbackPort:   cfg.CallbackPort,
-		authTimeout:    cfg.AuthTimeout,
-		logger:         logger,
-		client:         client,
-		stderr:         stderr,
-		token:          cfg.Token,
-		clientMetadata: cfg.ClientMetadata,
-		clientInfo:     cfg.ClientInfo,
-		onTokenChange:  cfg.OnTokenChange,
+		serverURL:        cfg.ServerURL,
+		resource:         cfg.Resource,
+		host:             cfg.Host,
+		callbackPort:     cfg.CallbackPort,
+		authTimeout:      cfg.AuthTimeout,
+		logger:           logger,
+		client:           client,
+		stderr:           stderr,
+		token:            cfg.Token,
+		clientMetadata:   cfg.ClientMetadata,
+		clientInfo:       cfg.ClientInfo,
+		onTokenChange:    cfg.OnTokenChange,
+		staticClientInfo: cfg.StaticClientInfo,
 	}
 }
 
