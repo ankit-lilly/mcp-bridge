@@ -193,6 +193,11 @@ func (m *Manager) exchangeCode(ctx context.Context, code, verifier, redirectURI 
 		"client_id":     {clientInfo.ClientID},
 		"code_verifier": {verifier},
 	}
+	if m.resource != "" {
+		data.Set("resource", m.resource)
+	} else if m.serverURL != "" {
+		data.Set("resource", m.serverURL)
+	}
 	if clientInfo.ClientSecret != "" {
 		data.Set("client_secret", clientInfo.ClientSecret)
 	}
