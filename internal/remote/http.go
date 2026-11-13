@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -82,9 +83,10 @@ type streamableConn struct {
 	recovering      bool   // guards against infinite recovery loops
 	userAgent       string // updated with client name from initialize
 
-	streamMu     sync.Mutex
-	streamCancel context.CancelFunc
-	streamResp   *http.Response
+	streamMu       sync.Mutex
+	streamCancel   context.CancelFunc
+	streamResp     *http.Response
+	lastStreamAuth [32]byte // credential already rejected after a successful login
 }
 
 var sseDataPrefix = []byte("data: ")
@@ -104,7 +106,6 @@ func (c *streamableConn) Read(ctx context.Context) ([]byte, error) {
 }
 
 func (c *streamableConn) Write(ctx context.Context, frame []byte) error {
-	// Store the initialize frame for session recovery
 	if c.isInitializeRequest(frame) {
 		c.mu.Lock()
 		c.initFrame = bytes.Clone(frame)
@@ -123,7 +124,6 @@ func (c *streamableConn) Write(ctx context.Context, frame []byte) error {
 	}
 	defer resp.Body.Close()
 
-	// Capture session ID
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 		c.mu.Lock()
 		c.sessionID = sid
@@ -134,15 +134,20 @@ func (c *streamableConn) Write(ctx context.Context, frame []byte) error {
 }
 
 // handleAuthChallenge retries the request after re-authorization if the server
-// returned 401 or 403. Returns the (possibly new) response or an error.
-// The caller must close the returned response body.
+// returned 401 or 403. The caller must close the returned response body.
 func (c *streamableConn) handleAuthChallenge(ctx context.Context, resp *http.Response, frame []byte) (*http.Response, error) {
 	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
 		return resp, nil
 	}
 
+	// Capture the credential from this request, not a later Token() call: another
+	// request may refresh the token before this response arrives.
+	sentCredential := CredentialFingerprint(resp.Request.Header.Get("Authorization"))
 	resp.Body.Close()
 
+	if resp.StatusCode == http.StatusForbidden && !remediableForbidden(resp.Header) {
+		return nil, ErrForbidden
+	}
 	if c.connector.authorizer == nil {
 		if resp.StatusCode == http.StatusUnauthorized {
 			return nil, ErrUnauthorized
@@ -151,9 +156,10 @@ func (c *streamableConn) handleAuthChallenge(ctx context.Context, resp *http.Res
 	}
 
 	challenge := &AuthRequiredError{
-		StatusCode: resp.StatusCode,
-		Headers:    resp.Header,
-		Phase:      "write",
+		StatusCode:     resp.StatusCode,
+		Headers:        resp.Header,
+		Phase:          "write",
+		SentCredential: sentCredential,
 	}
 	if authErr := c.connector.authorizer.EnsureAuthorized(ctx, challenge); authErr != nil {
 		return nil, authErr
@@ -162,7 +168,6 @@ func (c *streamableConn) handleAuthChallenge(ctx context.Context, resp *http.Res
 	return c.doPost(ctx, frame)
 }
 
-// dispatchResponse handles the response body based on status code and content type.
 func (c *streamableConn) dispatchResponse(ctx context.Context, resp *http.Response, frame []byte) error {
 	switch resp.StatusCode {
 	case http.StatusOK:
@@ -183,7 +188,6 @@ func (c *streamableConn) dispatchResponse(ctx context.Context, resp *http.Respon
 			}
 		}
 	case http.StatusAccepted, http.StatusNoContent:
-		// no body expected
 	case http.StatusNotFound:
 		c.mu.Lock()
 		hasSession := c.sessionID != ""
@@ -201,9 +205,8 @@ func (c *streamableConn) dispatchResponse(ctx context.Context, resp *http.Respon
 	return nil
 }
 
-// recover attempts to transparently re-establish the session after a 404 and
-// retry the failed frame. It re-sends the stored initialize handshake, waits
-// for the new session to be established, then retries the original request.
+// recover re-establishes the session after a 404 by re-sending the stored
+// initialize handshake, then retries the failed frame.
 func (c *streamableConn) recover(ctx context.Context, failedFrame []byte) error {
 	c.mu.Lock()
 	initFrame := c.initFrame
@@ -225,7 +228,6 @@ func (c *streamableConn) recover(ctx context.Context, failedFrame []byte) error 
 
 	c.logger.Info("session expired (404), attempting recovery...")
 
-	// 1. Tear down existing event stream
 	c.streamMu.Lock()
 	if c.streamCancel != nil {
 		c.streamCancel()
@@ -237,19 +239,16 @@ func (c *streamableConn) recover(ctx context.Context, failedFrame []byte) error 
 	c.streamResp = nil
 	c.streamMu.Unlock()
 
-	// 2. Clear session state
 	c.mu.Lock()
 	c.sessionID = ""
 	c.protocolVersion = ""
 	c.initialized = false
 	c.mu.Unlock()
 
-	// 3. Re-send initialize (captures new sessionID, starts new event stream)
 	if err := c.Write(ctx, initFrame); err != nil {
 		return fmt.Errorf("session recovery: re-initialize failed: %w", err)
 	}
 
-	// 4. Send notifications/initialized
 	notif := []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
 	if err := c.Write(ctx, notif); err != nil {
 		return fmt.Errorf("session recovery: initialized notification failed: %w", err)
@@ -260,7 +259,6 @@ func (c *streamableConn) recover(ctx context.Context, failedFrame []byte) error 
 	c.mu.Unlock()
 	c.logger.Info("session recovery successful", "new_session", newSID)
 
-	// 5. Retry the original failed frame
 	if err := c.Write(ctx, failedFrame); err != nil {
 		return fmt.Errorf("session recovery: retry failed: %w", err)
 	}
@@ -273,7 +271,15 @@ func (c *streamableConn) doPost(ctx context.Context, frame []byte) (*http.Respon
 		return nil, err
 	}
 
-	c.applyHeaders(req)
+	// A token-source failure here must not abort the POST: the original code
+	// swallowed it and let the resulting 401 drive the authorization flow, which
+	// is what keeps the bridge self-healing on token expiry. Propagating the
+	// error would kill the relay process and force a manual restart. Log it so
+	// the failure is diagnosable, then send the request and let the 401 (if any)
+	// trigger recovery.
+	if err := c.applyHeaders(req); err != nil {
+		c.logger.Warn("token source failed before POST; relying on server challenge for recovery", "err", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 
@@ -297,8 +303,14 @@ func (c *streamableConn) runEventStream(ctx context.Context) {
 	backoff := time.Second
 	for {
 		err := c.connectEventStream(ctx)
-		if err == errEventStreamNotSupported {
+		if errors.Is(err, errEventStreamNotSupported) || errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrForbidden) {
+			if errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrForbidden) {
+				c.logger.Warn("stopping event stream after rejected authorization", "err", err)
+			}
 			return
+		}
+		if err != nil {
+			c.logger.Warn("event stream disconnected", "err", err)
 		}
 		select {
 		case <-c.done:
@@ -325,7 +337,9 @@ func (c *streamableConn) connectEventStream(ctx context.Context) error {
 		return err
 	}
 
-	c.applyHeaders(req)
+	if err := c.applyHeaders(req); err != nil {
+		return fmt.Errorf("preparing event stream authorization: %w", err)
+	}
 	req.Header.Set("Accept", "text/event-stream")
 
 	c.mu.Lock()
@@ -346,24 +360,43 @@ func (c *streamableConn) connectEventStream(ctx context.Context) error {
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		// proceed
+		c.streamMu.Lock()
+		c.lastStreamAuth = [32]byte{}
+		c.streamMu.Unlock()
 	case http.StatusNotFound, http.StatusMethodNotAllowed:
 		resp.Body.Close()
 		return errEventStreamNotSupported
 	case http.StatusUnauthorized, http.StatusForbidden:
+		sentCredential := CredentialFingerprint(resp.Request.Header.Get("Authorization"))
 		resp.Body.Close()
+		if resp.StatusCode == http.StatusForbidden && !remediableForbidden(resp.Header) {
+			return ErrForbidden
+		}
+		c.streamMu.Lock()
+		alreadyRejected := c.lastStreamAuth == sentCredential && sentCredential != ([32]byte{}) && sentCredential != CredentialFingerprint("")
+		c.streamMu.Unlock()
+		if alreadyRejected {
+			return ErrUnauthorized
+		}
 		if c.connector.authorizer != nil {
 			challenge := &AuthRequiredError{
-				StatusCode: resp.StatusCode,
-				Headers:    resp.Header,
-				Phase:      "server-event-stream",
+				StatusCode:     resp.StatusCode,
+				Headers:        resp.Header,
+				Phase:          "server-event-stream",
+				SentCredential: sentCredential,
 			}
 			if authErr := c.connector.authorizer.EnsureAuthorized(ctx, challenge); authErr != nil {
 				return authErr
 			}
-			return fmt.Errorf("retrying after auth") // will trigger reconnect loop
+			c.streamMu.Lock()
+			c.lastStreamAuth = CredentialFingerprint(req.Header.Get("Authorization"))
+			c.streamMu.Unlock()
+			return fmt.Errorf("retrying event stream after authorization")
 		}
-		return fmt.Errorf("server event stream returned %d", resp.StatusCode)
+		if resp.StatusCode == http.StatusUnauthorized {
+			return ErrUnauthorized
+		}
+		return ErrForbidden
 	default:
 		resp.Body.Close()
 		return fmt.Errorf("server event stream returned %d", resp.StatusCode)
@@ -451,7 +484,10 @@ func (c *streamableConn) Close() error {
 			defer cancel()
 			req, err := http.NewRequestWithContext(ctx, "DELETE", c.connector.url, nil)
 			if err == nil {
-				c.applyHeaders(req)
+				if err := c.applyHeaders(req); err != nil {
+					c.logger.Warn("skipping session cleanup after token failure", "err", err)
+					return
+				}
 				req.Header.Set("Mcp-Session-Id", sid)
 				if pv != "" {
 					req.Header.Set("Mcp-Protocol-Version", pv)
@@ -466,12 +502,16 @@ func (c *streamableConn) Close() error {
 	return nil
 }
 
-func (c *streamableConn) applyHeaders(req *http.Request) {
+func (c *streamableConn) applyHeaders(req *http.Request) error {
 	for k, v := range c.connector.headers {
 		req.Header.Set(k, v)
 	}
 	if c.connector.tokenSource != nil {
-		if tok, err := c.connector.tokenSource.Token(req.Context()); err == nil && tok != "" {
+		tok, err := c.connector.tokenSource.Token(req.Context())
+		if err != nil {
+			return fmt.Errorf("obtaining access token: %w", err)
+		}
+		if tok != "" {
 			req.Header.Set("Authorization", "Bearer "+tok)
 		}
 	}
@@ -481,6 +521,26 @@ func (c *streamableConn) applyHeaders(req *http.Request) {
 	if ua != "" {
 		req.Header.Set("User-Agent", ua)
 	}
+	return nil
+}
+
+func remediableForbidden(headers http.Header) bool {
+	for _, value := range headers.Values("WWW-Authenticate") {
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "bearer ") {
+			continue
+		}
+		for _, field := range strings.Split(value, ",") {
+			field = strings.TrimSpace(field)
+			if len(field) >= 7 && strings.EqualFold(field[:7], "Bearer ") {
+				field = strings.TrimSpace(field[7:])
+			}
+			key, code, ok := strings.Cut(field, "=")
+			if ok && strings.EqualFold(strings.TrimSpace(key), "error") && strings.Trim(strings.TrimSpace(code), "\"") == "insufficient_scope" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // extractClientName reads clientInfo.name from the initialize frame and
@@ -546,7 +606,6 @@ func (c *streamableConn) handleInitializeResponse(body []byte) {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return
 	}
-	// Only proceed if this is a successful response (has result, no error)
 	if resp.Result == nil || resp.Error != nil {
 		return
 	}

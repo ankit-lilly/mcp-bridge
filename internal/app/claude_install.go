@@ -47,7 +47,7 @@ func RunConfigureClaude(_ context.Context, cfg *config.ClaudeInstallConfig, stdo
 	}
 
 	if result == claudeconfig.MergeUnchanged {
-		fmt.Fprintf(stderr, "Claude Desktop config already contains %q at %s\n", cfg.Name, configPath)
+		fmt.Fprintf(stderr, "Claude Desktop config already contains %q at %s (entry is identical — no changes needed)\n", cfg.Name, configPath)
 		return nil
 	}
 

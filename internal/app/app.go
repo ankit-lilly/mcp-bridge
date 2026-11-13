@@ -67,7 +67,6 @@ func RunBridge(ctx context.Context, cfg *config.BridgeConfig, stdin io.Reader, s
 	return relay.Run(ctx)
 }
 
-// RunInspect is the main entry point for the diagnostic inspect mode.
 func RunInspect(ctx context.Context, cfg *config.BridgeConfig, stdin io.Reader, stdout, stderr io.Writer) error {
 	ctx, sess, err := bootstrap(ctx, cfg, stdin, stdout, stderr)
 	if err != nil {

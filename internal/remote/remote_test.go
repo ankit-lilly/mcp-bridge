@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -576,6 +577,121 @@ func TestStreamableHTTP_UnsupportedEndpointErrors(t *testing.T) {
 				t.Fatalf("expected %q, got %q", tt.want, err.Error())
 			}
 		})
+	}
+}
+
+type failingToken struct{ err error }
+
+func (f failingToken) Token(context.Context) (string, error) { return "", f.err }
+
+// A token-source failure must not abort the POST: the bridge relies on the
+// resulting server challenge to drive re-authorization and keep the process
+// alive. The request is still sent; a 401 triggers the recovery flow.
+func TestStreamableHTTP_TokenFailureFallsThroughToChallenge(t *testing.T) {
+	failure := errors.New("refresh failed")
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("WWW-Authenticate", `Bearer realm="test"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	connector := NewHTTPConnector(HTTPConnectorConfig{URL: server.URL, Client: server.Client(), TokenSource: failingToken{failure}})
+	conn, err := connector.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := conn.(*streamableConn)
+	// No authorizer wired: the 401 surfaces as ErrUnauthorized rather than a
+	// browser flow, proving the request was sent despite the token error.
+	if err := c.Write(context.Background(), []byte(`{"jsonrpc":"2.0","method":"tools/list","id":1}`)); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("POST: expected 401 surfaced after token failure, got %v", err)
+	}
+	if n := requests.Load(); n == 0 {
+		t.Fatal("expected the POST to be sent so a challenge can drive recovery")
+	}
+}
+
+func TestStreamableHTTP_AuthRetryRemainsBounded(t *testing.T) {
+	var calls atomic.Int32
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	connector := NewHTTPConnector(HTTPConnectorConfig{
+		URL: server.URL, Client: server.Client(),
+		Authorizer: &mockAuthorizer{fn: func(context.Context, *AuthRequiredError) error { calls.Add(1); return nil }},
+	})
+	conn, err := connector.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.Write(context.Background(), []byte(`{"jsonrpc":"2.0","method":"tools/list","id":1}`)); err == nil {
+		t.Fatal("expected rejected retry to fail")
+	}
+	if attempts.Load() != 2 || calls.Load() != 1 {
+		t.Fatalf("expected two POSTs and one authorization, got %d POSTs and %d authorizations", attempts.Load(), calls.Load())
+	}
+}
+
+func TestStreamableHTTP_EventStreamDoesNotRepeatRejectedAuthorization(t *testing.T) {
+	var requests atomic.Int32
+	var authorizations atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	connector := NewHTTPConnector(HTTPConnectorConfig{
+		URL: server.URL, Client: server.Client(), TokenSource: StaticToken("rejected"),
+		Authorizer: &mockAuthorizer{fn: func(context.Context, *AuthRequiredError) error {
+			authorizations.Add(1)
+			return nil
+		}},
+	})
+	conn, err := connector.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	c := conn.(*streamableConn)
+	if err := c.connectEventStream(context.Background()); err == nil || errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected first challenge to request a retry, got %v", err)
+	}
+	if err := c.connectEventStream(context.Background()); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected unchanged rejected token to stop retrying, got %v", err)
+	}
+	if n := authorizations.Load(); n != 1 || requests.Load() != 2 {
+		t.Fatalf("expected one authorization and two GETs, got %d authorizations and %d GETs", n, requests.Load())
+	}
+}
+
+func TestStreamableHTTP_ForbiddenWithoutScopeChallengeDoesNotAuthorize(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	connector := NewHTTPConnector(HTTPConnectorConfig{
+		URL: server.URL, Client: server.Client(),
+		Authorizer: &mockAuthorizer{fn: func(context.Context, *AuthRequiredError) error { calls.Add(1); return nil }},
+	})
+	conn, err := connector.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.Write(context.Background(), []byte(`{"jsonrpc":"2.0","method":"tools/list","id":1}`)); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected forbidden, got %v", err)
+	}
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("forbidden opened %d authorization flows", n)
 	}
 }
 

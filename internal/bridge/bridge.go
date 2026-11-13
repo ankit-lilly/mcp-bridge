@@ -11,14 +11,14 @@ import (
 	"sync"
 )
 
-// ByteConn is the interface for bidirectional frame transport.
+// ByteConn is a bidirectional frame transport.
 type ByteConn interface {
 	Read(ctx context.Context) ([]byte, error)
 	Write(ctx context.Context, frame []byte) error
 	Close() error
 }
 
-// StdioConn wraps stdin/stdout as a ByteConn using newline-delimited frames.
+// StdioConn wraps stdin/stdout as a newline-delimited ByteConn.
 type StdioConn struct {
 	reader   *bufio.Scanner
 	writer   io.Writer
@@ -36,7 +36,6 @@ type scanResult struct {
 	err  error
 }
 
-// NewStdioConn creates a ByteConn over the given reader and writer.
 func NewStdioConn(r io.Reader, w io.Writer) *StdioConn {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 1<<20), 10<<20) // 10 MiB max line
@@ -92,9 +91,9 @@ func (s *StdioConn) Read(ctx context.Context) ([]byte, error) {
 func (s *StdioConn) Write(_ context.Context, frame []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Trim trailing whitespace to prevent double-newline framing errors.
-	// HTTP response bodies may include trailing \r\n which, combined with our
-	// delimiter newline, produces an empty line that the client fails to parse.
+	// Trim trailing whitespace: HTTP response bodies may include trailing \r\n
+	// which, combined with our delimiter newline, produces an empty line the
+	// client fails to parse.
 	frame = bytes.TrimRight(frame, " \t\r\n")
 	if len(frame) == 0 {
 		return nil
@@ -116,7 +115,7 @@ func (s *StdioConn) Close() error {
 	return nil
 }
 
-// Relay bridges messages between local and remote connections.
+// Relay forwards frames between local and remote connections.
 type Relay struct {
 	local  ByteConn
 	remote ByteConn
@@ -130,7 +129,6 @@ type RelayConfig struct {
 	ClientID string
 }
 
-// NewRelay creates a relay between local and remote connections.
 func NewRelay(local, remote ByteConn, cfg RelayConfig) *Relay {
 	logger := cfg.Logger
 	if logger == nil {
@@ -144,7 +142,7 @@ func NewRelay(local, remote ByteConn, cfg RelayConfig) *Relay {
 	}
 }
 
-// Run starts the bidirectional relay, blocking until disconnect or context cancellation.
+// Run forwards frames both directions until disconnect or context cancellation.
 func (r *Relay) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -177,8 +175,50 @@ func (r *Relay) relayLocalToRemote(ctx context.Context) error {
 
 		transformed := r.transformOutbound(frame)
 		if err := r.remote.Write(ctx, transformed); err != nil {
-			return err
+			// A failed remote write (e.g. a token-refresh or auth-recovery failure)
+			// must not tear down the relay: the bridge process would exit and the
+			// MCP host would silently lose the server until a manual restart.
+			// Instead, surface the failure to the client as a JSON-RPC error so
+			// the next request can trigger a fresh authorization flow.
+			if id := rpcID(frame); id != "" {
+				r.sendError(id, -32603, err.Error())
+			}
+			continue
 		}
+	}
+}
+
+// rpcID extracts the JSON-RPC id from a request frame so a synthetic error can
+// reference it. Notifications (no id) are dropped silently on failure.
+func rpcID(frame []byte) string {
+	var msg struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(frame, &msg); err != nil {
+		return ""
+	}
+	id := string(bytes.TrimSpace(msg.ID))
+	if id == "" || id == "null" {
+		return ""
+	}
+	return id
+}
+
+func (r *Relay) sendError(id string, code int, message string) {
+	resp := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      json.RawMessage(id),
+		"error": map[string]any{
+			"code":    code,
+			"message": message,
+		},
+	}
+	out, err := json.Marshal(resp)
+	if err != nil {
+		return
+	}
+	if werr := r.local.Write(context.Background(), out); werr != nil {
+		r.logger.Warn("failed to send error response to local client", "err", werr)
 	}
 }
 
@@ -197,7 +237,6 @@ func (r *Relay) relayRemoteToLocal(ctx context.Context) error {
 	}
 }
 
-// jsonRPCMessage is a minimal JSON-RPC envelope for inspection.
 type jsonRPCMessage struct {
 	Method string `json:"method,omitempty"`
 }

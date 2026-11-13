@@ -26,7 +26,6 @@ func (m *Manager) discover(ctx context.Context, challenge *ChallengeInfo) error 
 	var prm *resourceMetadata
 	var err error
 
-	// 1. If challenge has resource_metadata URL, fetch that directly
 	if challenge != nil && challenge.ResourceMetadataURL != "" {
 		prm, err = m.fetchResourceMetadata(ctx, challenge.ResourceMetadataURL)
 		if err != nil {
@@ -34,31 +33,26 @@ func (m *Manager) discover(ctx context.Context, challenge *ChallengeInfo) error 
 		}
 	}
 
-	// 2. Try path-specific PRM
 	if prm == nil {
 		prm, _ = m.fetchPathSpecificPRM(ctx)
 	}
 
-	// 3. Try root PRM
 	if prm == nil {
 		prm, _ = m.fetchRootPRM(ctx)
 	}
 
-	// 4. If PRM found, use first authorization_servers[]
 	if prm != nil && len(prm.AuthorizationServers) > 0 {
 		asMeta, err := m.fetchAuthServerMetadata(ctx, prm.AuthorizationServers[0])
 		if err == nil {
 			m.authzEndpoint = asMeta.AuthorizationEndpoint
 			m.tokenEndpoint = asMeta.TokenEndpoint
 			m.regEndpoint = asMeta.RegistrationEndpoint
-			// Resolve scope
 			m.resolvedScope = m.effectiveScope(challenge, prm, asMeta)
 			return nil
 		}
 		m.logger.Debug("auth server metadata fetch failed", "err", err)
 	}
 
-	// 5. Fallback: origin-based discovery
 	return m.discoverFromOrigin(ctx, challenge)
 }
 
@@ -148,14 +142,10 @@ func (m *Manager) fetchAuthServerMetadataURL(ctx context.Context, wellKnown stri
 	return &meta, nil
 }
 
-// effectiveScope resolves scope with priority:
-// 1. Static scope from user-provided client metadata
-// 2. scope from WWW-Authenticate challenge
-// 3. scopes_supported from PRM
-// 4. scopes_supported from AS metadata
-// 5. empty (let server decide)
+// effectiveScope resolves scope by priority: static client metadata,
+// WWW-Authenticate challenge, PRM scopes_supported, AS metadata scopes_supported,
+// then a safe default (many auth servers reject empty scope).
 func (m *Manager) effectiveScope(challenge *ChallengeInfo, prm *resourceMetadata, asMeta *authServerMetadata) string {
-	// 1. Static scope from client metadata
 	if m.clientMetadata != nil {
 		var meta map[string]any
 		if err := json.Unmarshal(m.clientMetadata, &meta); err == nil {
@@ -165,21 +155,17 @@ func (m *Manager) effectiveScope(challenge *ChallengeInfo, prm *resourceMetadata
 		}
 	}
 
-	// 2. From challenge
 	if challenge != nil && challenge.Scope != "" {
 		return challenge.Scope
 	}
 
-	// 3. From PRM
 	if prm != nil && len(prm.ScopesSupported) > 0 {
 		return strings.Join(prm.ScopesSupported, " ")
 	}
 
-	// 4. From AS metadata
 	if asMeta != nil && len(asMeta.ScopesSupported) > 0 {
 		return strings.Join(asMeta.ScopesSupported, " ")
 	}
 
-	// 5. Safe default — many auth servers reject empty scope
 	return "openid email profile"
 }

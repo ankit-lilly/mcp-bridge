@@ -2,6 +2,7 @@ package remote
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
@@ -25,6 +26,13 @@ type AuthRequiredError struct {
 	StatusCode int
 	Headers    http.Header
 	Phase      string // "write", "server-event-stream"
+	// SentCredential identifies the exact Authorization header rejected by the server.
+	// An empty header has its own fingerprint; the credential is never retained here.
+	SentCredential [32]byte
+}
+
+func CredentialFingerprint(authorization string) [32]byte {
+	return sha256.Sum256([]byte(authorization))
 }
 
 func (e *AuthRequiredError) Error() string {

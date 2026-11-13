@@ -32,10 +32,8 @@ type Manager struct {
 	refreshErr    error
 	onTokenChange func(context.Context, *Token) error
 
-	// static client info
 	clientMetadata json.RawMessage
 
-	// discovered metadata
 	authzEndpoint string
 	tokenEndpoint string
 	regEndpoint   string
@@ -103,6 +101,16 @@ func NewManager(cfg ManagerConfig) *Manager {
 		onTokenChange:    cfg.OnTokenChange,
 		staticClientInfo: cfg.StaticClientInfo,
 	}
+}
+
+// CurrentAccessToken snapshots the stored token without attempting a refresh.
+func (m *Manager) CurrentAccessToken() string {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if m.token == nil {
+		return ""
+	}
+	return m.token.AccessToken
 }
 
 func (m *Manager) SetToken(tok *Token) {

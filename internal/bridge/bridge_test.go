@@ -292,3 +292,62 @@ func TestRelay_DisconnectPropagation(t *testing.T) {
 		t.Fatalf("expected clean shutdown, got error: %v", err)
 	}
 }
+
+// failingWriterConn succeeds until a threshold, then fails every Write.
+type failingWriterConn struct {
+	*mockConn
+	failAfter int
+	calls     int
+}
+
+func (f *failingWriterConn) Write(ctx context.Context, frame []byte) error {
+	f.calls++
+	if f.calls > f.failAfter {
+		return io.ErrClosedPipe
+	}
+	return f.mockConn.Write(ctx, frame)
+}
+
+// TestRelay_RemoteWriteFailureKeepsRelayAlive verifies that a failed remote
+// write does not tear down the relay. The bridge process must stay alive so a
+// subsequent request can trigger re-authorization instead of forcing the user
+// to restart the MCP host.
+func TestRelay_RemoteWriteFailureKeepsRelayAlive(t *testing.T) {
+	local := newMockConn()
+	remote := &failingWriterConn{mockConn: newMockConn(), failAfter: 1}
+
+	relay := NewRelay(local, remote, RelayConfig{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- relay.Run(ctx) }()
+
+	// First request: remote Write succeeds (failAfter=1 allows 1 call).
+	req1 := []byte(`{"jsonrpc":"2.0","method":"tools/list","id":1}`)
+	local.readCh <- req1
+	for len(remote.getWritten()) == 0 {
+		time.Sleep(time.Millisecond)
+	}
+
+	// Second request: remote Write fails. The relay must synthesize a
+	// JSON-RPC error to the local side and keep running.
+	req2 := []byte(`{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{}}`)
+	local.readCh <- req2
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("expected a JSON-RPC error response for the failed request")
+		default:
+		}
+		written := local.getWritten()
+		for _, w := range written {
+			if strings.Contains(string(w), `"id":2`) && strings.Contains(string(w), `"error"`) {
+				cancel()
+				<-done
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

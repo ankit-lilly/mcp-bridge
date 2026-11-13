@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -22,10 +23,7 @@ func (m *Manager) GetToken(ctx context.Context) (string, error) {
 	}
 
 	if !tok.ExpiresAt.IsZero() && time.Now().After(tok.ExpiresAt) {
-		if tok.RefreshToken == "" {
-			return "", errors.New("token expired and no refresh token available")
-		}
-		if err := m.dedupRefresh(ctx); err != nil {
+		if err := m.dedupRefresh(ctx, tok); err != nil {
 			return "", err
 		}
 		tok = m.currentToken()
@@ -37,7 +35,7 @@ func (m *Manager) GetToken(ctx context.Context) (string, error) {
 	return tok.AccessToken, nil
 }
 
-func (m *Manager) dedupRefresh(ctx context.Context) error {
+func (m *Manager) dedupRefresh(ctx context.Context, observed *Token) error {
 	m.refreshMu.Lock()
 	if m.refreshing {
 		done := m.refreshDone
@@ -51,6 +49,20 @@ func (m *Manager) dedupRefresh(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		m.refreshMu.Unlock()
+		return err
+	}
+	// The caller may have observed the old token before another refresh finished.
+	tok := m.currentToken()
+	if tok != observed || tok == nil || tok.ExpiresAt.IsZero() || !time.Now().After(tok.ExpiresAt) {
+		m.refreshMu.Unlock()
+		return nil
+	}
+	if tok.RefreshToken == "" {
+		m.refreshMu.Unlock()
+		return errors.New("token expired and no refresh token available")
 	}
 	m.refreshing = true
 	m.refreshDone = make(chan struct{})
@@ -114,6 +126,23 @@ func (m *Manager) doRefresh(ctx context.Context) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		var oauthErr struct {
+			Code string `json:"error"`
+		}
+		// Only include the OAuth error code, never an arbitrary response body or description.
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&oauthErr)
+		if len(oauthErr.Code) > 0 && len(oauthErr.Code) <= 64 {
+			valid := true
+			for _, ch := range oauthErr.Code {
+				if (ch < 'a' || ch > 'z') && (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') && ch != '_' && ch != '-' {
+					valid = false
+					break
+				}
+			}
+			if valid {
+				return fmt.Errorf("token refresh returned %d (%s)", resp.StatusCode, oauthErr.Code)
+			}
+		}
 		return fmt.Errorf("token refresh returned %d", resp.StatusCode)
 	}
 

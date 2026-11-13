@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -149,6 +151,73 @@ func TestManager_TokenExchange(t *testing.T) {
 	}
 	if tok.RefreshToken != "new-refresh-token" {
 		t.Fatalf("unexpected refresh token: %s", tok.RefreshToken)
+	}
+}
+
+func TestManager_RefreshFailureDoesNotUseExpiredToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":"invalid_grant"}`)
+	}))
+	defer server.Close()
+	mgr := NewManager(ManagerConfig{
+		Token:      &Token{AccessToken: "expired", RefreshToken: "old", ExpiresAt: time.Now().Add(-time.Hour)},
+		ClientInfo: &ClientRegistration{ClientID: "client"},
+	})
+	mgr.tokenEndpoint = server.URL
+	if token, err := mgr.GetToken(context.Background()); err == nil || token != "" || !strings.Contains(err.Error(), "invalid_grant") {
+		t.Fatalf("expected refresh failure, got %q, %v", token, err)
+	}
+}
+
+func TestManager_RefreshErrorIncludesSafeOAuthCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"invalid_client","error_description":"secret-value","access_token":"secret-value"}`)
+	}))
+	defer server.Close()
+	mgr := NewManager(ManagerConfig{
+		Token:      &Token{AccessToken: "expired", RefreshToken: "secret-refresh", ExpiresAt: time.Now().Add(-time.Hour)},
+		ClientInfo: &ClientRegistration{ClientID: "client"},
+	})
+	mgr.tokenEndpoint = server.URL
+	_, err := mgr.GetToken(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "401 (invalid_client)") || strings.Contains(err.Error(), "secret-value") {
+		t.Fatalf("expected safe refresh details, got %v", err)
+	}
+}
+
+func TestManager_ConcurrentExpiredTokenRefreshesOnce(t *testing.T) {
+	var calls atomic.Int32
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		close(started)
+		<-finish
+		json.NewEncoder(w).Encode(map[string]any{"access_token": "new", "refresh_token": "rotated", "expires_in": 3600})
+	}))
+	defer server.Close()
+	mgr := NewManager(ManagerConfig{
+		Token:      &Token{AccessToken: "expired", RefreshToken: "old", ExpiresAt: time.Now().Add(-time.Hour)},
+		ClientInfo: &ClientRegistration{ClientID: "client"},
+	})
+	mgr.tokenEndpoint = server.URL
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if token, err := mgr.GetToken(context.Background()); err != nil || token != "new" {
+				t.Errorf("GetToken: %q, %v", token, err)
+			}
+		}()
+	}
+	<-started
+	close(finish)
+	wg.Wait()
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("expected one refresh, got %d", n)
 	}
 }
 
